@@ -7,3 +7,9 @@ venv/
 .vscode/
 *.swp
 .DS_Store
+
+# MCP / secrets — never commit
+.mcp.json
+.env
+*.token
+*.secret
