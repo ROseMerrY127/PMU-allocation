@@ -13,3 +13,6 @@ venv/
 .env
 *.token
 *.secret
+
+# Claude Code local settings
+.claude/
