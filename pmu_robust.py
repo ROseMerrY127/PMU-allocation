@@ -4,19 +4,24 @@ r"""
 ======================================================
 
 依据：鲁棒最优PMU分配方案.md（已用户二次确认）
+ZI 处理：与 pmu_placement.py 同步采用 Option B（超节点折叠 + G' 单 ZI 规则）
 
 数学符号（与 pmu_placement.py 严格一致）
     n              : 节点总数 (= 37)
     V = {1..n}     : 节点集
     N[i]           : 节点 i 的闭邻域（含自环）
     Z              : ZI 节点集
-    (C, S_C)       : ZI 连通分量及其超群；k=|C|, m=|S_C|
-    x ∈ {0,1}^n    : PMU 放置向量，x_i=1 ⇔ 节点 i 装 PMU
-    P(x)           : {i : x_i = 1}
-    Obs(P)         : 闭邻域直接可观 + ZI 不动点传播后的可观节点集
-    k*             : 最少 PMU 数（由现行 ILP 求出）
-    X*             : { x | ZI-SOP约束(x)=1, Σ x_i = k* }
-    Surv(x, p)     : |Obs(P(x) \ {p})|
+    C_p, E_{C_p}   : ZI 连通分量及其外邻；v_p 折叠超节点
+    G' = (V', E')  : 折叠后的超图  (V' = (V∖Z) ∪ {v_p})
+    x ∈ {0,1}^n    : 原 PMU 放置；x'_{v_p} = ⋁_{z∈C_p} x_z (提升)
+    P(x)           : {i ∈ V : x_i = 1}
+    Obs(P)         : 在 G' 中由闭邻域直接可观 + 单 ZI 规则
+                     (|N'[v_p] ∩ obs'| ≥ m_p - k_p ⇒ N'[v_p] ⊆ obs')
+                     不动点传播后，再映回 V 的可观节点集
+                     (v_p ∈ obs' ⇒ C_p ⊆ Obs)
+    k*             : 最少 PMU 数（Option B 下 ILP 求出）
+    X*             : { x | Option-B 约束(x)=1, Σ x_i = k* }
+    Surv(x, p)     : |Obs(P(x) ∖ {p})|
     R_min(x)       : min_{p ∈ P(x)} Surv(x, p)
     X**            : argmax_{x ∈ X*} R_min(x)
 
@@ -47,7 +52,9 @@ from pmu_placement import (
 # 0. 参数
 # ----------------------------------------------------------------------
 MAX_ENUM = 500          # |X*| 截断阈值（议题 5）
-OUTPUT_TXT = r"c:\Users\ASUS\Desktop\新建文件夹\result_robust.txt"
+import os as _os
+OUTPUT_TXT = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                           "result_robust.txt")
 
 
 # ----------------------------------------------------------------------

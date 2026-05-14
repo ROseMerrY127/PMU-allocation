@@ -37,17 +37,38 @@
 | `k* = 10` | 最少 PMU 数（已由现行 ILP 求出） | 标量 |
 | `X*` | 所有最优解的集合 | `X* ⊂ {0,1}^n` |
 
-### 2.2 可观函数 `Obs(P)`（与现行 `verify()` 等价）
+### 2.2 可观函数 `Obs(P)`（Option B：在超图 G' 上传播）
+
+ZI 处理与 `pmu_placement.py` 同步采用 Option B（拓扑折叠为单一超节点）：
+
+**构造 G'**
+- $V' = (V\setminus Z)\cup\{v_1,\dots,v_P\}$，每个 ZI 连通分量 $C_p$ 折叠为 $v_p$
+- 边按 §算法方案.md §三-B 步骤 1 重连；$v_p$ 含自环
+
+**决策提升**
+$$
+x'_w = x_w\;\;(w\in V\setminus Z),\qquad
+x'_{v_p}=\bigvee_{z\in C_p} x_z
+$$
+
+**G' 上的不动点伪代码**
 
 ```
-Obs(P) ← { i ∈ V : N[i] ∩ P ≠ ∅ }          # 直接可观
+P' ← {w ∈ V∖Z : x_w=1} ∪ {v_p : ∃z∈C_p, x_z=1}
+Obs' ← { v ∈ V' : N'[v] ∩ P' ≠ ∅ }            # G' 中直接可观
 repeat
-    for each ZI 超群 (C, S_C) with k=|C|, m=|S_C|:
-        if |S_C ∩ Obs| ≥ m - k:
-            Obs ← Obs ∪ S_C
-until Obs 不再变化
+    for each v_p ∈ Z':                          # 单 ZI 规则 (k=1)
+        if |N'[v_p] ∩ Obs'| ≥ m_p - k_p:        # |N'[v_p]| = m_p-k_p+1
+            Obs' ← Obs' ∪ N'[v_p]
+until Obs' 不再变化
+
+# 映回 V
+Obs ← { i ∈ V∖Z : i ∈ Obs' } ∪ ⋃_{p: v_p∈Obs'} C_p
 return Obs
 ```
+
+> 与 §三-A 的不同已在 算法方案.md §三-B 步骤 5 表格中说明：本问题里只在
+> $C=\{8,9,18\}$ 与 $C=\{24,25,28\}$ 两个 $k\ge2$ 分量上有真实差异。
 
 ### 2.3 阶段 I — 枚举所有最优解 `X*`
 

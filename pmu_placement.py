@@ -1,36 +1,46 @@
 # -*- coding: utf-8 -*-
 r"""
-最佳 PMU 分配 —— 布尔约束化简 + ILP 精确求解
-==============================================
+最佳 PMU 分配 —— 布尔约束化简 + ILP 精确求解（Option B：超节点折叠）
+====================================================================
 
-变量映射（与 算法方案.md / 最佳PMU分配.md 一致）：
-    n            : 节点总数 (= 37)
-    A_ij         : 邻接矩阵元素；含自环 A_ii = 1
-    x_i in {0,1} : 决策变量；x_i = 1 表示 i 节点装 PMU
-    N[i]         : 节点 i 的闭邻域 = {j : A_ij = 1}
-    Z            : 特殊（零注入）节点集
-    f_i = OR_{j in N[i]} x_j    : 节点 i 的可观布尔函数
-    S_C = C ∪ U_{z in C} N(z)   : ZI 群 C 的超群
-    k = |C|, m = |S_C|          : ZI 群规模与超群规模
+数学模型（与 算法方案.md §三-B 严格一致）：
 
-数学模型：
-    min  Sum_i x_i
-    s.t. f_i = 1 for all i      (经 ZI 松弛后修改约束)
+  原图 G = (V, E)，|V| = n = 37，邻接矩阵含自环 A_ii = 1。
+  Z      : ZI 节点集 (|Z| = 11)
+  x ∈ {0,1}^n : PMU 决策；x_i = 1 表示 i 装 PMU
+  N[i]  : G 中 i 的闭邻域
 
-ZI 松弛规则（合并 ZI 群策略）：
-    对每个 ZI 群 C：
-      - 删除 f_z = 1, for all z in C
-      - 对每个 i in S_C \ C：
-            f_i  OR  OR_{T subset S_C\{i}, |T|=m-k}  AND_{j in T} f_j  =  1
+  ── 拓扑折叠为超图 G' = (V', E') ──
+    对每个 ZI 连通分量 C_p ⊆ Z 引入超节点 v_p：
+      V'   = (V ∖ Z) ∪ {v_1, ..., v_P}
+      原边 (u,w) 同属某 C_p → 删除
+      原边 (u,w), u ∈ C_p, w ∉ Z → 替换为 (v_p, w)
+      其余原边保留
+      每个 v ∈ V' 含自环
+    Z' = {v_1, ..., v_P}，每个 v_p 是单 ZI 节点 (k=1)。
 
-布尔化简：
-    单调布尔函数的最小 SOP = 极小蕴含项集合，仅需 [幂等 + 吸收] 即可。
+  ── 提升 (lifting) ──
+    x'_w   = x_w                  (w ∈ V ∖ Z)
+    x'_{v_p} = ⋁_{z ∈ C_p} x_z   (超节点装 PMU ⇔ 内部某 z 装 PMU)
 
-ILP 线性化：
-    对化简后约束 OR_k AND_{j in P_ik} x_j >= 1
-      - 单变量子句 {j}: 直接保留 x_j
-      - 多变量子句 P : 引入 0-1 辅助 y, 加 y <= x_j (for all j in P)
-      - 主约束       : Sum_k term_k >= 1
+  ── G' 中可观函数 ──
+    f'(v) = ⋁_{u ∈ N'[v]} x'_u
+    回映到原变量：
+      L(i) = (N[i] ∖ Z) ∪ ⋃_{p: N[i] ∩ C_p ≠ ∅} C_p     (i ∈ V ∖ Z)
+      f'(i)   = ⋁_{l ∈ L(i)} x_l
+      f'(v_p) = ⋁_{l ∈ S_{C_p}} x_l,  S_{C_p} = C_p ∪ E_{C_p}
+
+  ── G' 上的单 ZI 松弛 (k=1)，对每个 v_p ──
+    删除 f'(v_p) = 1
+    对每个 j ∈ E_{C_p}：
+      f'(j) ∨ ⋀_{u ∈ N'[v_p] ∖ {j}} f'(u) = 1
+    (因 |N'[v_p] ∖ {j}| = m_p - k_p，仅一种 T 选择)
+
+  目标：min Σ_i x_i  s.t. 上述约束。
+
+布尔化简 & ILP 线性化：与原方案相同
+  - SOP 上幂等 + 吸收律 → 最小 SOP
+  - 多变量积项引入 0-1 辅助 y, y ≤ x_j；OR 主约束 Σ ≥ 1
 """
 import sys, io
 # 强制 stdout 用 UTF-8，避免 Windows GBK 控制台乱码
@@ -138,52 +148,86 @@ def sop_and_many(sops):
 
 
 # ----------------------------------------------------------------------
-# 4. 构造每个节点的最终约束 SOP
+# 4. 构造每个非 ZI 节点的最终约束 SOP（Option B：超节点折叠）
 # ----------------------------------------------------------------------
 def build_constraints(n, N, Z, edges):
     """
+    Option B 约束生成（数学定义见模块顶部 docstring）。
+
+    对每个 i ∈ V ∖ Z：
+        初始 f'(i) = ⋁_{l ∈ L(i)} x_l                                   …(1)
+        若存在 p 使 i ∈ E_{C_p}，对每个这样的 p 计算
+            rule_p = f'(v_p) ∧ ⋀_{j ∈ E_{C_p} ∖ {i}} f'(j)              …(2)
+        最终约束 = (1) OR_p (2)                                          …(3)
+
+    ZI 节点 z ∈ Z 不再有独立约束（被折叠进 v_p）。
+
     返回:
-        constraints : dict[int -> SOP]   每个保留节点的最终 SOP 约束（=1）
-        supers      : list[(C, S_C)]     ZI 超群（用于解的事后验证）
+        constraints : dict[int -> SOP]   仅 i ∈ V ∖ Z
+        supers      : list[(C, S)]       兼容旧接口，喂给 verify
     """
-    # 初始 f_i^0 = ⋁_{j ∈ N[i]} x_j   （单元素 clause 的 SOP）
-    f0 = {i: [frozenset([j]) for j in N[i]] for i in range(1, n + 1)}
+    components = zi_components(Z, edges)           # list[frozenset]
+    P_count = len(components)
 
-    # ZI 连通分量 → 超群
-    components = zi_components(Z, edges)
-    supers = []
+    # comp_of[z] = 索引 p（z ∈ C_p）；其余为 None
+    comp_of = {i: None for i in range(1, n + 1)}
+    for p, C in enumerate(components):
+        for z in C:
+            comp_of[z] = p
+
+    # E_{C_p} = N(C_p) ∖ C_p ⊆ V ∖ Z ； S_{C_p} = C_p ∪ E_{C_p}
+    E_C_list = []
+    S_C_list = []
     for C in components:
-        S = set(C)
+        ext = set()
         for z in C:
-            S |= N[z]
-        supers.append((C, S))
+            ext |= N[z]                            # N[z] 含 z 自身
+        ext -= C
+        assert ext, f"ZI 连通分量 {sorted(C)} 没有外部邻居，模型不可解。"
+        E_C_list.append(ext)
+        S_C_list.append(set(C) | ext)
 
-    # 每个节点的当前约束：先复制 f0
-    constraints = {i: list(f0[i]) for i in range(1, n + 1)}
+    # L(i) for i ∈ V ∖ Z
+    #   L(i) = (N[i] ∖ Z) ∪ ⋃_{p: N[i] ∩ C_p ≠ ∅} C_p
+    L = {}
+    for i in range(1, n + 1):
+        if i in Z:
+            continue
+        Li = set()
+        for j in N[i]:                             # N[i] 含 i 自身
+            if j in Z:
+                Li |= components[comp_of[j]]       # ZI 邻居 → 整个分量
+            else:
+                Li.add(j)
+        L[i] = Li
+    # 健壮性：每个非 ZI 节点至少能"看见"自己
+    for i in L:
+        assert i in L[i], f"L({i}) 不含自身，闭邻域构造异常"
 
-    # 步骤 (i)：删除每个 ZI 节点 z 的等式 f_z = 1
-    for C, S in supers:
-        for z in C:
-            constraints.pop(z, None)
+    # 初始 f'(i) SOP（仅 i ∈ V ∖ Z），每个 clause 为单变量
+    constraints = {i: [frozenset([l]) for l in L[i]] for i in L}
 
-    # 步骤 (ii)：对每个 i ∈ S_C \ C，OR 上规则项
-    #   ⋁_{T ⊆ S_C\{i}, |T| = m-k} ⋀_{j∈T} f_j^0
-    for C, S in supers:
-        k = len(C)
-        m = len(S)
-        T_size = m - k
-        S_sorted = sorted(S)
-        for i in S:
-            if i in C:
-                continue                          # ZI 节点已删
-            others = [j for j in S_sorted if j != i]
-            rule_sop = []                         # 起始 = FALSE
-            for T in combinations(others, T_size):
-                T_sop = sop_and_many([f0[j] for j in T])
-                rule_sop = sop_or(rule_sop, T_sop)
-            # 多个超群规则按 OR 累加（节点同时属于多个超群时）
+    # 单 ZI 松弛：对每个 v_p ∈ Z'，对每个 i ∈ E_{C_p} 累加 rule_p
+    for p in range(P_count):
+        S = S_C_list[p]                            # f'(v_p) = ⋁_{l∈S} x_l
+        E = E_C_list[p]
+        f_vp_sop  = [frozenset([l]) for l in S]
+        f_ext_sop = {j: [frozenset([l]) for l in L[j]] for j in E}
+
+        for i in E:
+            # rule_p^(i) = f'(v_p) ∧ ⋀_{j ∈ E ∖ {i}} f'(j)
+            and_factors = [f_vp_sop] + [f_ext_sop[j] for j in E if j != i]
+            rule_sop = sop_and_many(and_factors)
+            # 若 i 同属多个 E_{C_p}，规则按 OR 累加；与初始 f'(i) 也 OR
             constraints[i] = sop_or(constraints[i], rule_sop)
 
+    # 约束数与正确性自检
+    assert len(constraints) == n - len(Z), \
+        f"约束数 {len(constraints)} ≠ n-|Z| = {n - len(Z)}"
+    for i, sop in constraints.items():
+        assert sop, f"节点 {i} 的约束为常 FALSE，模型不可行。"
+
+    supers = [(components[p], S_C_list[p]) for p in range(P_count)]
     return constraints, supers
 
 
@@ -257,31 +301,92 @@ def solve_ilp(n, constraints):
 
 
 # ----------------------------------------------------------------------
-# 6. 解的验证：模拟 ZI 推断到不动点，检查全节点可观
+# 6. 解的验证：在超图 G' 上做不动点，再映回原图（Option B）
 # ----------------------------------------------------------------------
 def verify(x_val, N, supers):
     """
-    输入 x_val (0/1 长度 n)，沿 ZI 规则迭代到不动点，检查每个节点是否可观。
+    Option B 验证。
+
+    G' 节点 ID 约定：
+        原非 ZI 节点 i ∈ V ∖ Z  → 整数 i
+        超节点 v_p (p=0..P-1)   → 元组 ('super', p)
+
+    步骤：
+        1. 构造 G' 的 PMU 集 P'：
+              x'_w     = x_w               (w ∈ V ∖ Z)
+              x'_{v_p} = ⋁_{z ∈ C_p} x_z
+              P' = {v ∈ V' : x'_v = 1}
+        2. 初始可观: obs' = {v ∈ V' : N'[v] ∩ P' ≠ ∅}
+        3. 不动点：对每个 v_p ∈ Z'
+              若 |N'[v_p] ∩ obs'| ≥ m_p - k_p  ⇒  obs' ← obs' ∪ N'[v_p]
+        4. 映回 V：
+              i ∈ V ∖ Z ：i ∈ obs  ⇔  i ∈ obs'
+              z ∈ C_p   ：z ∈ obs  ⇔  v_p ∈ obs'
     """
     n = len(x_val)
     placed = {i + 1 for i in range(n) if x_val[i] == 1}
 
-    # 直接可观：i 的闭邻域内有 PMU
-    obs = {i for i in range(1, n + 1) if any(j in placed for j in N[i])}
+    # 反推 Z / comp_of / E_C / S_C / components
+    components = [set(C) for C, _ in supers]
+    Z = set().union(*components) if components else set()
+    comp_of = {i: None for i in range(1, n + 1)}
+    for p, C in enumerate(components):
+        for z in C:
+            comp_of[z] = p
+    E_C_list = [set(S) - C for C, S in zip(components, [S for _, S in supers])]
+    S_C_list = [set(S) for _, S in supers]
+    P_count = len(components)
 
-    # ZI 不动点传播
+    # 1) G' 中的 PMU 集 P'
+    P_prime = set()
+    for i in placed:
+        if i in Z:
+            P_prime.add(('super', comp_of[i]))     # x'_{v_p} = ⋁_{z∈C_p} x_z
+        else:
+            P_prime.add(i)
+
+    # G' 闭邻域 N'[v]
+    N_prime = {}
+    for i in range(1, n + 1):
+        if i in Z:
+            continue
+        nbr = set()
+        for j in N[i]:                              # 含自环 j = i
+            if j in Z:
+                nbr.add(('super', comp_of[j]))
+            else:
+                nbr.add(j)
+        N_prime[i] = nbr
+        assert i in nbr, f"N'[{i}] 缺自身"
+    for p in range(P_count):
+        N_prime[('super', p)] = {('super', p)} | E_C_list[p]
+
+    # 2) 初始 obs'
+    obs_prime = {v for v, nb in N_prime.items() if nb & P_prime}
+
+    # 3) 不动点：G' 上的单 ZI 规则
     while True:
         changed = False
-        for C, S in supers:
-            k = len(C); m = len(S)
-            obs_count = sum(1 for j in S if j in obs)
-            if obs_count >= m - k:
-                for j in S:
-                    if j not in obs:
-                        obs.add(j)
-                        changed = True
+        for p in range(P_count):
+            v_p = ('super', p)
+            threshold = len(S_C_list[p]) - len(components[p])   # m_p - k_p
+            if len(N_prime[v_p] & obs_prime) >= threshold:
+                new = N_prime[v_p] - obs_prime
+                if new:
+                    obs_prime |= new
+                    changed = True
         if not changed:
             break
+
+    # 4) 映回 V
+    obs = set()
+    for i in range(1, n + 1):
+        if i in Z:
+            if ('super', comp_of[i]) in obs_prime:
+                obs.add(i)
+        else:
+            if i in obs_prime:
+                obs.add(i)
 
     return obs == set(range(1, n + 1)), placed, obs
 
@@ -325,6 +430,8 @@ if __name__ == "__main__":
     main()
     # 同时把结果写到 result.txt 便于阅读（避免控制台编码问题）
     import contextlib
-    with open("c:\\Users\\ASUS\\Desktop\\新建文件夹\\result.txt", "w", encoding="utf-8") as f:
+    import os
+    _OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "result.txt")
+    with open(_OUT, "w", encoding="utf-8") as f:
         with contextlib.redirect_stdout(f):
             main()
